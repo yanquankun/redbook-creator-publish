@@ -132,6 +132,17 @@ class RedbookUploader:
             print(f"❌ 初始化浏览器失败: {e}")
             return False
 
+    def check_upload_control(self):
+        """检测上传控件是否存在"""
+        for selector in self.selectors['upload_input']:
+            try:
+                upload_input = self.page.locator(selector).first
+                if upload_input.count() > 0:
+                    return True
+            except:
+                continue
+        return False
+
     def open_upload_page(self):
         """打开小红书上传页面"""
         self.log_step(1, 5, "打开小红书创作者平台")
@@ -141,21 +152,43 @@ class RedbookUploader:
             self.page.goto(self.upload_url, wait_until='networkidle', timeout=30000)
             time.sleep(2)  # 等待页面稳定
 
-            # 检查是否需要登录
-            if 'login' in self.page.url.lower():
-                print("   ⚠️  检测到未登录，请先登录...")
-                print("   等待登录完成...")
+            # 检测上传控件DOM是否存在
+            print("\n   🔍 检测登录状态...")
+            if self.check_upload_control():
+                print("   ✅ 已登录，可以开始上传")
+                print("   ✅ 页面加载成功")
+                return True
 
-                # 等待跳转到上传页面（最多等待 120 秒）
-                try:
-                    self.page.wait_for_url('**/publish/publish**', timeout=120000)
-                    print("   ✅ 登录成功")
-                except PlaywrightTimeout:
-                    print("   ❌ 登录超时，请确保已登录小红书账号")
-                    return False
+            # 上传控件不存在，可能未登录
+            print("   ⚠️  未检测到上传控件，您可能需要登录")
+            print("   ⏰ 请在 20 秒内完成登录...")
+            print("   💡 如果已经登录，请刷新页面")
 
-            print("   ✅ 页面加载成功")
-            return True
+            # 等待20秒
+            for remaining in range(20, 0, -1):
+                print(f"   ⏳ 倒计时: {remaining} 秒...", end='\r')
+                time.sleep(1)
+
+                # 每秒检测一次，如果检测到上传控件则提前结束
+                if self.check_upload_control():
+                    print("\n   ✅ 检测到上传控件，登录成功！")
+                    print("   ✅ 页面加载成功")
+                    return True
+
+            # 20秒后再次检测
+            print("\n\n   🔍 最后检测...")
+            if self.check_upload_control():
+                print("   ✅ 检测到上传控件，登录成功！")
+                print("   ✅ 页面加载成功")
+                return True
+
+            # 仍然检测不到，退出流程
+            print("   ❌ 未检测到上传控件，登录失败")
+            print("\n   💡 建议：")
+            print("      1. 手动打开 https://creator.xiaohongshu.com/publish/publish")
+            print("      2. 登录小红书账号")
+            print("      3. 重新执行自动上传")
+            return False
 
         except Exception as e:
             print(f"   ❌ 打开失败: {e}")
@@ -254,11 +287,7 @@ class RedbookUploader:
 
     def fill_content(self, content, tags):
         """填写正文和标签"""
-        self.log_step(4, 5, "填写正文")
-
-        # 组合正文和标签
-        tags_text = ' '.join([f'#{tag}' if not tag.startswith('#') else tag for tag in tags])
-        full_content = f"{content}\n\n{tags_text}"
+        self.log_step(4, 5, "填写正文和标签")
 
         word_count = len(content)
         print(f"   正文字数: {word_count} 字")
@@ -284,8 +313,8 @@ class RedbookUploader:
             content_editor.click()
             time.sleep(0.3)
 
-            # 填写内容（逐段输入，更自然）
-            paragraphs = full_content.split('\n\n')
+            # 填写正文内容（逐段输入）
+            paragraphs = content.split('\n\n')
             for i, paragraph in enumerate(paragraphs):
                 if paragraph.strip():
                     content_editor.type(paragraph, delay=20)
@@ -295,6 +324,36 @@ class RedbookUploader:
 
             time.sleep(0.5)
             print("   ✅ 正文填写完成")
+
+            # 填写标签（每个标签单独输入，间隔1秒并回车）
+            if tags:
+                print("\n   📋 输入标签...")
+                # 先换两行
+                self.page.keyboard.press('Enter')
+                self.page.keyboard.press('Enter')
+
+                for i, tag in enumerate(tags):
+                    # 确保标签有 # 前缀
+                    tag_text = f'#{tag}' if not tag.startswith('#') else tag
+
+                    # 输入标签
+                    content_editor.type(tag_text, delay=30)
+                    print(f"   输入: {tag_text} ...", end=" ")
+
+                    # 等待1秒
+                    time.sleep(1)
+                    print("⏱️ 1秒 ...", end=" ")
+
+                    # 按回车
+                    self.page.keyboard.press('Enter')
+                    print("⏎")
+
+                    # 如果不是最后一个标签，加个空格
+                    if i < len(tags) - 1:
+                        time.sleep(0.2)
+
+                print("   ✅ 所有标签输入完成")
+
             return True
 
         except Exception as e:
@@ -387,15 +446,22 @@ class RedbookUploader:
         title = self.config.get('title', '')
         content = self.config.get('content', '')
         tags = self.config.get('tags', [])
+        cover = self.config.get('cover', '')
         images = self.config.get('images', [])
 
-        if not title or not content or not images:
-            print("❌ 配置文件缺少必要字段（title, content, images）")
+        # 组合图片列表：封面图必须在第一位
+        all_images = []
+        if cover:
+            all_images.append(cover)
+        all_images.extend(images)
+
+        if not title or not content or not all_images:
+            print("❌ 配置文件缺少必要字段（title, content, cover 或 images）")
             return False
 
         # 将相对路径转换为绝对路径
         config_dir = Path(self.config_path).parent
-        image_paths = [str(config_dir / img) for img in images]
+        image_paths = [str(config_dir / img) for img in all_images]
 
         # 验证图片文件存在
         for img_path in image_paths:
@@ -432,19 +498,24 @@ class RedbookUploader:
             self.print_separator()
             print("  🎉 上传完成！")
             self.print_separator()
-            print("帖子已成功发布到小红书创作者平台")
+
+            # 播放完成提示音（1秒）
+            print("\n🔔 滴~  (播放 1 秒提示音)")
+            self.play_completion_sound()
+
+            print("\n帖子已成功发布到小红书创作者平台")
             print("\n🔗 查看帖子：")
             print("   请在浏览器中查看发布结果")
             print("   https://creator.xiaohongshu.com/")
             print("\n💡 提示：")
-            print("   - 浏览器将保持打开，您可以查看或修改帖子")
+            print("   - ✅ 浏览器将保持打开，请继续查看或编辑帖子")
             print("   - 发布后可能需要平台审核")
             print("   - 审核通过后会在小红书APP中显示")
+            print("\n⚠️  请勿关闭浏览器！")
             self.print_separator()
 
-            # 播放完成提示音
-            self.play_completion_sound()
             print("\n✅ 任务完成！浏览器将保持打开状态。")
+            print("   您可以在浏览器中继续查看、编辑或管理帖子。")
 
             return True
 
@@ -456,6 +527,8 @@ class RedbookUploader:
 
         finally:
             # 不关闭浏览器，让用户可以查看结果
+            # 保持浏览器打开，用户可以手动关闭
+            print("\n💡 完成操作后，您可以手动关闭浏览器窗口。")
             pass
 
 
